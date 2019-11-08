@@ -22,11 +22,10 @@
 @interface KJVisionTool ()<AVCaptureVideoDataOutputSampleBufferDelegate>
 @property(nonatomic,copy,class) KJVisionDatasBlock xxblock;
 @property(nonatomic,strong) UIView *superView;
-@property(nonatomic,strong) AVCaptureSession *captureSession;
-@property(nonatomic,strong) AVCaptureDevice *videoDevice;
-@property(nonatomic,strong) AVCaptureDeviceInput *videoInput;
-@property(nonatomic,strong) AVCaptureVideoDataOutput *dataOutput;
-@property(nonatomic,strong) AVCaptureVideoPreviewLayer *captureVideoPreviewLayer;
+@property(nonatomic,strong) AVCaptureSession *session;/// 采集会话
+@property(nonatomic,strong) AVCaptureDeviceInput *videoInput;/// 视频输入流
+@property(nonatomic,strong) AVCaptureVideoDataOutput *dataOutput;/// 输出元数据流
+@property(nonatomic,strong) AVCaptureVideoPreviewLayer *previewLayer;/// 摄像头采集内容展示区域
 @end
 
 @implementation KJVisionTool
@@ -81,9 +80,6 @@ static KJVisionDatasBlock _xxblock = nil;
             tool = [[KJVisionTool alloc]init];
         }
     }
-//    //顺时针 90°
-//    CGAffineTransform t = CGAffineTransformMakeTranslation(view.frame.size.height,.0);
-//    view.transform = mixedTransform;//CGAffineTransformRotate(t, M_PI_2);
     tool.superView = view;
     /// 权限检测
     [tool getAuthorization];
@@ -232,18 +228,7 @@ static inline NSArray * kj_getAllKeys(Class clazz,bool isProperty){
     return newImage;
 }
 
-#pragma mark - 动态识别相关
-/// 初始化相关内容
-- (void)initCapture{
-    [self addSession];
-    [_captureSession beginConfiguration];
-    
-    [self addVideo];
-    [self addPreviewLayer];
-    
-    [_captureSession commitConfiguration];
-    [_captureSession startRunning];
-}
+#pragma mark - HelpMethods
 /// 获取权限
 - (void)getAuthorization{
     AVAuthorizationStatus videoStatus = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeVideo];
@@ -261,75 +246,73 @@ static inline NSArray * kj_getAllKeys(Class clazz,bool isProperty){
     }
     return nil;
 }
-/// 添加预览视图
-- (void)addPreviewLayer{
-    // 通过会话 (AVCaptureSession) 创建预览层
-    _captureVideoPreviewLayer = [[AVCaptureVideoPreviewLayer alloc] initWithSession:_captureSession];
-    _captureVideoPreviewLayer.frame = self.superView.bounds;
-    
-    //有时候需要拍摄完整屏幕大小的时候可以修改这个
-    _captureVideoPreviewLayer.videoGravity = AVLayerVideoGravityResizeAspectFill;
-    _captureVideoPreviewLayer.connection.videoOrientation = 3;
-    
-    // 显示在视图表面的图层
-    CALayer *layer = self.superView.layer;
-    layer.masksToBounds = true;
-    [layer addSublayer:_captureVideoPreviewLayer];
+/// 初始化相关内容
+- (void)initCapture{
+    [self.session beginConfiguration];
+    [_session addInput:self.videoInput];
+    [_session addOutput:self.dataOutput];
+    [self.superView.layer addSublayer:self.previewLayer];
+    [_session commitConfiguration];
+    [_session startRunning];
 }
-/// 添加video
-- (void)addVideo{
-    /// AVCaptureDevicePositionBack后置摄像头
-    _videoDevice = [self deviceWithMediaType:AVMediaTypeVideo preferringPosition:AVCaptureDevicePositionBack];
-    [self addVideoInput];
-    [self addDataOutput];
-}
-/// 添加videoinput
-- (void)addVideoInput{
-    _videoInput = [[AVCaptureDeviceInput alloc] initWithDevice:_videoDevice error:NULL];
-    // 将视频输入对象添加到会话 (AVCaptureSession) 中
-    if ([_captureSession canAddInput:_videoInput]) {
-        [_captureSession addInput:_videoInput];
+#pragma mark - getter
+- (AVCaptureVideoPreviewLayer*)previewLayer{
+    if (!_previewLayer) {
+        // 通过会话 (AVCaptureSession) 创建预览层
+        _previewLayer = [[AVCaptureVideoPreviewLayer alloc] initWithSession:_session];
+        _previewLayer.frame = self.superView.bounds;
+        
+        //有时候需要拍摄完整屏幕大小的时候可以修改这个
+        _previewLayer.videoGravity = AVLayerVideoGravityResizeAspectFill;
+        _previewLayer.connection.videoOrientation = 3;
     }
+    return _previewLayer;
 }
-/// 添加数据输出
-- (void)addDataOutput{
-    // 拍摄视频输出对象
-    // 初始化输出设备对象，用户获取输出数据
-    _dataOutput = [[AVCaptureVideoDataOutput alloc] init];
-    [_dataOutput setSampleBufferDelegate:self queue:dispatch_queue_create("CameraCaptureSampleBufferDelegateQueue", NULL)];
-    if ([_captureSession canAddOutput:_dataOutput]) {
-        [_captureSession addOutput:_dataOutput];
+- (AVCaptureSession *)session{
+    if (!_session) {
+        _session = [[AVCaptureSession alloc] init];
+        //设置视频分辨率
+        //注意,这个地方设置的模式/分辨率大小将影响你后面拍摄照片/视频的大小,
+        if ([_session canSetSessionPreset:AVCaptureSessionPresetHigh]) {
+            [_session setSessionPreset:AVCaptureSessionPresetHigh];
+        }
+    }
+    return _session;
+}
+- (AVCaptureDeviceInput*)videoInput{
+    if (!_videoInput) {
+        /// AVCaptureDevicePositionBack后置摄像头
+        AVCaptureDevice *videoDevice = [self deviceWithMediaType:AVMediaTypeVideo preferringPosition:AVCaptureDevicePositionBack];
+        _videoInput = [[AVCaptureDeviceInput alloc] initWithDevice:videoDevice error:NULL];
+    }
+    return _videoInput;
+}
+- (AVCaptureVideoDataOutput*)dataOutput{
+    if (!_dataOutput) {
+        // 拍摄视频输出对象
+        // 初始化输出设备对象，用户获取输出数据
+        _dataOutput = [[AVCaptureVideoDataOutput alloc] init];
+        [_dataOutput setSampleBufferDelegate:self queue:dispatch_queue_create("CameraCaptureSampleBufferDelegateQueue", NULL)];
         //需要重新进行配置输出 特别是下面的输出方向
         AVCaptureConnection *captureConnection = [_dataOutput connectionWithMediaType:AVMediaTypeVideo];
-        if ([captureConnection isVideoOrientationSupported]) {
-            [captureConnection setVideoOrientation:AVCaptureVideoOrientationPortrait];
-        }
         // 视频稳定设置
-        if ([captureConnection isVideoStabilizationSupported]) {
-            captureConnection.preferredVideoStabilizationMode = AVCaptureVideoStabilizationModeAuto;
-        }
+        captureConnection.preferredVideoStabilizationMode = AVCaptureVideoStabilizationModeAuto;
         // 设置输出图片方向
         captureConnection.videoOrientation = AVCaptureVideoOrientationPortrait;
     }
+    return _dataOutput;
 }
-- (void)addSession{
-    _captureSession = [[AVCaptureSession alloc] init];
-    //设置视频分辨率
-    //注意,这个地方设置的模式/分辨率大小将影响你后面拍摄照片/视频的大小,
-    if ([_captureSession canSetSessionPreset:AVCaptureSessionPresetHigh]) {
-        [_captureSession setSessionPreset:AVCaptureSessionPresetHigh];
-    }
-}
-
 #pragma mark - AVCaptureVideoDataOutputSampleBufferDelegate
 /// 获取输出
 - (void)captureOutput:(AVCaptureFileOutput *)output didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection{
-    CVPixelBufferRef BufferRef = CMSampleBufferGetImageBuffer(sampleBuffer);
-    VNDetectFaceRectanglesRequest *detectFaceRequest = [[VNDetectFaceRectanglesRequest alloc] init];
-    VNImageRequestHandler *detectFaceRequestHandler = [[VNImageRequestHandler alloc]initWithCVPixelBuffer:BufferRef options:@{}];
-    [detectFaceRequestHandler performRequests:@[detectFaceRequest] error:nil];
-    /// 输出数据
-    _xxblock(detectFaceRequest.results);
+    @autoreleasepool {
+        CVPixelBufferRef BufferRef = CMSampleBufferGetImageBuffer(sampleBuffer);
+        VNDetectFaceRectanglesRequest *detectFaceRequest = [[VNDetectFaceRectanglesRequest alloc] init];
+        VNImageRequestHandler *detectFaceRequestHandler = [[VNImageRequestHandler alloc]initWithCVPixelBuffer:BufferRef options:@{}];
+        [detectFaceRequestHandler performRequests:@[detectFaceRequest] error:nil];
+        /// 输出数据
+        _xxblock(detectFaceRequest.results);
+    }
 }
 
 @end
